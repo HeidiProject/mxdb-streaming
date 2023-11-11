@@ -1,0 +1,18 @@
+version: '3'
+services:
+  mxdb-streaming:
+    container_name: mxdb-streaming
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: docker.psi.ch:5000/heidi/mxdb-streaming:${VERSION}
+    restart: always
+    ports:
+      - 8008:8008
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/certificates:/certs:ro
+    networks:
+      - my-network
+networks:
+  my-network:
