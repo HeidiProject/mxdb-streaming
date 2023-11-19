@@ -1,8 +1,10 @@
-FROM tiangolo/uvicorn-gunicorn-fastapi:python3.8-slim
+FROM tiangolo/uvicorn-gunicorn-fastapi:python3.11-slim
 
 COPY ./app /app
 
-RUN pip install pymongo
+COPY requirements .
+
+RUN pip install -r requirements.txt
 
 EXPOSE 8008
 
