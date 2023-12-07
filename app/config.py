@@ -1,7 +1,15 @@
-# MongoDB connection details
-mongodb_url = "mongodb://localhost:27017"
-database_name = "your_database_name"
-collection_name = "collection"
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import List
 
-# API key
-api_key = ""
+# Implemented Pydantic Settings for the ENV variables
+# https://docs.pydantic.dev/latest/concepts/pydantic_settings/
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8')
+
+    mongodb_url: str 
+    database_name: str 
+    user_collection_name: str 
+    stream_collection_name: str 
+    vespa_collection_name: str
+
+    # https://docs.pydantic.dev/latest/concepts/pydantic_settings/#dotenv-env-support
