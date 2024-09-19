@@ -5,7 +5,7 @@ from typing import List
 # https://docs.pydantic.dev/latest/concepts/pydantic_settings/
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file='.env', env_file_encoding='utf-8')
-
+    api_key: str
     mongodb_url: str 
     database_name: str 
     user_collection_name: str 
