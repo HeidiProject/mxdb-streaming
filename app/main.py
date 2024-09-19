@@ -138,27 +138,29 @@ async def vespa_stream(
 
     db = client[settings.database_name]
     vespa_collection: Collection = db[settings.vespa_collection_name]
-
+    if userAccount[0] == "e":
+        userAccount = userAccount[1:]
+    pgroup = f"p{userAccount}"
     # Generator function to stream SSEs
     def generate_events():
         try:
             # Watch changes in the collection for the specified userAccount
             pipeline = [
-                {"$match": {"fullDocument.eaccount": user_account.id}},
+                {"$match": {"fullDocument.user_data.pgroup": pgroup}},
                 {"$project": {
                     "fullDocument._id": 1,
-                    "fullDocument.crystfelMinPixCount": 1,
-                    "fullDocument.crystfelMinSNR": 1,
-                    "fullDocument.crystfelThreshold": 1,
+                    "fullDocument.user_data.crystfelMinPixCount": 1,
+                    "fullDocument.user_data.crystfelMinSNR": 1,
+                    "fullDocument.user_data.crystfelThreshold": 1,
                     "fullDocument.numberOfImages": 1,
                     "fullDocument.numberOfImagesIndexed": 1,
-                    "fullDocument.mergeId": 1,
-                    "fullDocument.dataFileName": 1,
+                    "fullDocument.user_data.mergeId": 1,
+                    "fullDocument.filename": 1,
                     "fullDocument.createdOn": 1,
                 }}
             ]
             with vespa_collection.watch(pipeline=pipeline) as stream:
-                print(f"Watching for changes in the {settings.vespa_collection_name} collection for userAccount: {user_account.id}")
+                print(f"Watching for changes in the {settings.vespa_collection_name} collection for pgroup: {pgroup}")
                 for change in stream:
                     full_document = change.get("fullDocument")
                     if full_document:
