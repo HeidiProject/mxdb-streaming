@@ -8,6 +8,14 @@ from bson import ObjectId
 from pydantic import BaseModel, Field
 from datetime import datetime
 import json
+import logging
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 # Implemented Pydantic Settings for the ENV variables
 from config import Settings
@@ -24,10 +32,9 @@ async def get_client() -> MongoClient:
     client = MongoClient(settings.mongodb_url)
     try:
         yield client
-        print("Connected successfully to MongoDB server")   
+        print("Connected successfully to MongoDB server")
     finally:
-        client.close()
-        print("MongoDB connection closed")
+        print("In a finally and not try anymore")
 
 
 class User(BaseModel):
@@ -56,12 +63,26 @@ class CustomJSONEncoder(json.JSONEncoder):
         elif isinstance(obj, datetime):
             return obj.isoformat()
         return super().default(obj)
+    
+def serialize_documents(doc):
+    """Convert ObjectId to string in a MongoDB document."""
+    if isinstance(doc, list):
+        return [serialize_documents(item) for item in doc]
+    if isinstance(doc, dict):
+        return {key: serialize_documents(value) for key, value in doc.items()}
+    if isinstance(doc, ObjectId):
+        return str(doc)
+    return doc
 
 async def authenticate_user(user_account: User, client: MongoClient) -> bool:
     """
     Check if the user of client has the necessary permissions
-    to access the endpoing
+    to access the endpoint
     """
+    print(user_account.id)
+    print(user_account.uuid)
+    if user_account.id[0] == "p":
+        user_account.id = f"e{user_account[1:]}"
     db = client[settings.database_name]
     user_collection: Collection = db[settings.user_collection_name]
     user = user_collection.find_one({'_id': user_account.id})
@@ -146,18 +167,24 @@ async def vespa_stream(
         try:
             # Watch changes in the collection for the specified userAccount
             pipeline = [
-                {"$match": {"fullDocument.user_data.pgroup": pgroup}},
-                {"$project": {
-                    "fullDocument._id": 1,
-                    "fullDocument.user_data.crystfelMinPixCount": 1,
-                    "fullDocument.user_data.crystfelMinSNR": 1,
-                    "fullDocument.user_data.crystfelThreshold": 1,
-                    "fullDocument.numberOfImages": 1,
-                    "fullDocument.numberOfImagesIndexed": 1,
-                    "fullDocument.user_data.mergeId": 1,
-                    "fullDocument.filename": 1,
-                    "fullDocument.createdOn": 1,
-                }}
+                {
+                    "$match": {
+                        "fullDocument.experiment_group": "p21981"
+                    }
+                },
+                {
+                    "$project": {
+                        "run_number": "$fullDocument.run_number",
+                        "triggered_flag": "$fullDocument.user_data.triggered_flag",
+                        "trigger_status": { "$ifNull": ["$fullDocument.trigger_status", "off"] },
+                        "resolutionLimitMean": { "$ifNull": ["$fullDocument.resolutionLimitMean", None] },
+                        "numberOfImages": { "$ifNull": ["$fullDocument.numberOfImages", 0] },
+                        "numberOfImagesIndexed": { "$ifNull": ["$fullDocument.numberOfImagesIndexed", 0] },
+                        "numberReflectionsMean": { "$ifNull": ["$fullDocument.numberReflectionsMean", None] },
+                        "sample_name": "$fullDocument.sample_name",
+                        "user_tag": "$fullDocument.user_tag"
+                    }
+                }
             ]
             with vespa_collection.watch(pipeline=pipeline) as stream:
                 print(f"Watching for changes in the {settings.vespa_collection_name} collection for pgroup: {pgroup}")
@@ -175,14 +202,272 @@ async def vespa_stream(
         except OperationFailure as e:
             print("Error watching collection:", e)
 
-        finally:
-            # Close the MongoDB connection
-            client.close()
-            print("MongoDB connection closed")
-
     # Return SSEs as a streaming response
     return StreamingResponse(generate_events(), media_type="text/event-stream")
 
+
+@app.get("/experiment-data/")
+def get_experiment_data(experiment_group: str = "", client = Depends(get_client)
+):
+    logger.debug(f"inside experiment-data endpoint for experiment_group: {experiment_group}")
+    pipeline = [
+        {
+            '$match': {
+                'experiment_group': experiment_group
+            }
+        },
+        {
+            '$project': {
+                'run_number': 1,
+                'trigger_status': {
+                    '$ifNull': ['$trigger_status', 'off']
+                },
+                'resolutionLimitMean': {
+                    '$ifNull': ['$resolutionLimitMean', None]
+                },
+                'numberOfImages': {
+                    '$ifNull': ['$numberOfImages', 0]
+                },
+                'numberOfImagesIndexed': {
+                    '$ifNull': ['$numberOfImagesIndexed', 0]
+                },
+                'numberReflectionsMean': {
+                    '$ifNull': ['$numberReflectionsMean', None]
+                },
+                'trigger_flag':{
+                    '$ifNull': ['$user_data.trigger_flag', False]
+                },
+                'sample_name': 1,
+                'user_tag': 1
+            }
+        },
+        {
+            '$group': {
+                '_id': {
+                    'run_number': '$run_number',
+                    'trigger_status': '$trigger_status',
+                    'user_tag': '$user_tag',
+                    'sample_name': '$sample_name',
+                    'trigger_flag': '$trigger_flag'
+                },
+                'acquisitions': {
+                    '$push': {
+                        'resolutionLimitMean': '$resolutionLimitMean',
+                        'numberOfImages': '$numberOfImages',
+                        'numberOfImagesIndexed': '$numberOfImagesIndexed',
+                        'numberReflectionsMean': '$numberReflectionsMean'
+                    }
+                },
+                'diffraction_resolution': {
+                    '$avg': '$resolutionLimitMean'
+                },
+                'total_images': {
+                    '$sum': '$numberOfImages'
+                },
+                'indexed_images': {
+                    '$sum': '$numberOfImagesIndexed'
+                },
+                'total_reflections': {
+                    '$avg': '$numberReflectionsMean'
+                }
+            }
+        },
+        {
+            '$sort': {
+                '_id.run_number': -1  # Sort by run_number in descending order
+            }
+        }
+    ]
+
+    logger.debug("after pipeline")
+
+    try:
+        # Execute the aggregation pipeline
+        db = client[settings.database_name]
+        collection: Collection = db[settings.vespa_collection_name]
+        results = collection.aggregate(pipeline)        
+        serialized_results = [serialize_documents(doc) for doc in results]  # Serialize the result
+        return serialized_results
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/experiment-data-summary/")
+def get_experiment_data(experiment_group: str = "", client = Depends(get_client)
+):
+    logger.debug(f"inside experiment-data endpoint for experiment_group: {experiment_group}")
+    pipeline = [
+        {
+            '$match': {
+                'experiment_group': experiment_group
+            }
+        }, {
+            '$project': {
+                'user_data': '$user_data', 
+                'trigger_status': {
+                    '$ifNull': [
+                        '$trigger_status', 'off'
+                    ]
+                }, 
+                'resolutionLimitMean': {
+                    '$ifNull': [
+                        '$resolutionLimitMean', None
+                    ]
+                }, 
+                'numberOfImages': {
+                    '$ifNull': [
+                        '$numberOfImages', 0
+                    ]
+                }, 
+                'numberOfImagesIndexed': {
+                    '$ifNull': [
+                        '$numberOfImagesIndexed', 0
+                    ]
+                }, 
+                'numberReflectionsMean': {
+                    '$ifNull': [
+                        '$numberReflectionsMean', None
+                    ]
+                }, 
+                'sample_name': 1, 
+                'user_tag': {
+                    '$ifNull': [
+                        '$user_tag', None
+                    ]
+                }, 
+            }
+        }, {
+            '$group': {
+                '_id': {
+                    'user_tag': '$user_tag', 
+                    'trigger_flag': '$user_data.trigger_flag', 
+                    'trigger_status': '$trigger_status', 
+                    'sample_name': '$sample_name'
+                }, 
+                'acquisitions': {
+                    '$push': {
+                        'resolutionLimitMean': '$resolutionLimitMean', 
+                        'numberOfImages': '$numberOfImages', 
+                        'numberOfImagesIndexed': '$numberOfImagesIndexed', 
+                        'numberReflectionsMean': '$numberReflectionsMean'
+                    }
+                }, 
+                'diffraction_resolution': {
+                    '$avg': '$resolutionLimitMean'
+                }, 
+                'total_images': {
+                    '$sum': '$numberOfImages'
+                }, 
+                'indexed_images': {
+                    '$sum': '$numberOfImagesIndexed'
+                }, 
+                'total_reflections': {
+                    '$avg': '$numberReflectionsMean'
+                }
+            }
+        }
+    ]
+
+    logger.debug("after pipeline")
+
+    try:
+        # Execute the aggregation pipeline
+        db = client[settings.database_name]
+        collection: Collection = db[settings.vespa_collection_name]
+        results = collection.aggregate(pipeline).to_list(length=None)
+        serialized_results = [serialize_documents(doc) for doc in results]  # Serialize the result
+        return serialized_results
+    except Exception as e:
+        logger.error(f"Error details: {repr(e)}")
+        raise HTTPException(status_code=500, detail=f"Server Error: {repr(e)}")
+    
+@app.get("/ffcs-summary/")
+def get_ffcs_experiment_data(user_account: str = "", client = Depends(get_client)
+):
+    logger.debug(f"inside experiment-data endpoint for experiment_group: {user_account}")
+    pipeline = [
+        {
+            '$match': {
+                'userAccount': "e14965" #user_account
+            }
+        }, {
+            '$addFields': {
+                '_id': {
+                    '$toString': '$_id'
+                }, 
+                'libraryId': {
+                    '$toString': '$libraryId'
+                }
+            }
+        }, {
+            '$project': {
+                'campaignId': '$campaignId', 
+                'document': '$$ROOT'
+            }
+        }, {
+            '$group': {
+                '_id': {
+                    'campaignId': '$campaignId'
+                }, 
+                'document': {
+                    '$push': '$$ROOT'
+                }
+            }
+        }
+    ]
+
+    logger.info("after pipeline")
+
+    try:
+        # Execute the aggregation pipeline
+        db = client['ffcs']
+        collection: Collection = db['Campaigns']
+        results = collection.aggregate(pipeline).to_list(length=None)
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+@app.get("/ffcs-campaign-summary/")
+def get_ffcs_campaign_data(user_account: str = "", campaign_id: str = "", client = Depends(get_client)
+):
+    logger.debug(f"inside experiment-data endpoint for experiment_group: {user_account}")
+    pipeline = [
+        {
+            '$match': {
+                'userAccount': 'e20275', 
+                'campaignId': 'software_test'
+            }
+        }, {
+            '$addFields': {
+                '_id': {
+                    '$toString': '$_id'
+                }, 
+                'libraryId': {
+                    '$toString': '$libraryId'
+                }
+            }
+        }, {
+            '$group': {
+                '_id': {
+                    'campaignId': '$campaignId'
+                }, 
+                'document': {
+                    '$push': '$$ROOT'
+                }
+            }
+        }
+    ]
+
+    logger.info("after pipeline")
+
+    try:
+        # Execute the aggregation pipeline
+        db = client['ffcs']
+        collection: Collection = db['Wells']
+        results = collection.aggregate(pipeline).to_list(length=None)
+        return results
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
