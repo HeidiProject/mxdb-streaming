@@ -169,7 +169,7 @@ async def vespa_stream(
             pipeline = [
                 {
                     "$match": {
-                        "fullDocument.experiment_group": "p21981"
+                        "fullDocument.experiment_group": pgroup
                     }
                 },
                 {
@@ -205,7 +205,6 @@ async def vespa_stream(
     # Return SSEs as a streaming response
     return StreamingResponse(generate_events(), media_type="text/event-stream")
 
-
 @app.get("/experiment-data/")
 def get_experiment_data(experiment_group: str = "", client = Depends(get_client)
 ):
@@ -215,10 +214,17 @@ def get_experiment_data(experiment_group: str = "", client = Depends(get_client)
             '$match': {
                 'experiment_group': experiment_group
             }
-        },
-        {
+        }, {
+            '$project': {
+                'numberOfSpotsPerImage': 0, 
+                'numberOfLatticesPerImage': 0, 
+                'slurmJobId_off': 0, 
+                'beam_y_pxl': 0,
+            }
+        }, {
             '$project': {
                 'run_number': 1,
+                'file_number': 1,
                 'trigger_status': {
                     '$ifNull': ['$trigger_status', 'off']
                 },
@@ -240,43 +246,13 @@ def get_experiment_data(experiment_group: str = "", client = Depends(get_client)
                 'sample_name': 1,
                 'user_tag': 1
             }
-        },
-        {
-            '$group': {
-                '_id': {
-                    'run_number': '$run_number',
-                    'trigger_status': '$trigger_status',
-                    'user_tag': '$user_tag',
-                    'sample_name': '$sample_name',
-                    'trigger_flag': '$trigger_flag'
-                },
-                'acquisitions': {
-                    '$push': {
-                        'resolutionLimitMean': '$resolutionLimitMean',
-                        'numberOfImages': '$numberOfImages',
-                        'numberOfImagesIndexed': '$numberOfImagesIndexed',
-                        'numberReflectionsMean': '$numberReflectionsMean'
-                    }
-                },
-                'diffraction_resolution': {
-                    '$avg': '$resolutionLimitMean'
-                },
-                'total_images': {
-                    '$sum': '$numberOfImages'
-                },
-                'indexed_images': {
-                    '$sum': '$numberOfImagesIndexed'
-                },
-                'total_reflections': {
-                    '$avg': '$numberReflectionsMean'
-                }
-            }
-        },
-        {
-            '$sort': {
-                '_id.run_number': -1  # Sort by run_number in descending order
-            }
+        }, {
+        '$sort': {
+            'run_number': -1, 
+            'file_number': -1
         }
+    }
+
     ]
 
     logger.debug("after pipeline")
@@ -291,6 +267,93 @@ def get_experiment_data(experiment_group: str = "", client = Depends(get_client)
         return results
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+#  Commented out at the moment for testing - runID aggregation logic below
+# @app.get("/experiment-data/")
+# def get_experiment_data(experiment_group: str = "", client = Depends(get_client)
+# ):
+#     logger.debug(f"inside experiment-data endpoint for experiment_group: {experiment_group}")
+#     pipeline = [
+#         {
+#             '$match': {
+#                 'experiment_group': experiment_group
+#             }
+#         },
+#         {
+#             '$project': {
+#                 'run_number': 1,
+#                 'trigger_status': {
+#                     '$ifNull': ['$trigger_status', 'off']
+#                 },
+#                 'resolutionLimitMean': {
+#                     '$ifNull': ['$resolutionLimitMean', None]
+#                 },
+#                 'numberOfImages': {
+#                     '$ifNull': ['$numberOfImages', 0]
+#                 },
+#                 'numberOfImagesIndexed': {
+#                     '$ifNull': ['$numberOfImagesIndexed', 0]
+#                 },
+#                 'numberReflectionsMean': {
+#                     '$ifNull': ['$numberReflectionsMean', None]
+#                 },
+#                 'trigger_flag':{
+#                     '$ifNull': ['$user_data.trigger_flag', False]
+#                 },
+#                 'sample_name': 1,
+#                 'user_tag': 1
+#             }
+#         },
+#         {
+#             '$group': {
+#                 '_id': {
+#                     'run_number': '$run_number',
+#                     'trigger_status': '$trigger_status',
+#                     'user_tag': '$user_tag',
+#                     'sample_name': '$sample_name',
+#                     'trigger_flag': '$trigger_flag'
+#                 },
+#                 'acquisitions': {
+#                     '$push': {
+#                         'resolutionLimitMean': '$resolutionLimitMean',
+#                         'numberOfImages': '$numberOfImages',
+#                         'numberOfImagesIndexed': '$numberOfImagesIndexed',
+#                         'numberReflectionsMean': '$numberReflectionsMean'
+#                     }
+#                 },
+#                 'diffraction_resolution': {
+#                     '$avg': '$resolutionLimitMean'
+#                 },
+#                 'total_images': {
+#                     '$sum': '$numberOfImages'
+#                 },
+#                 'indexed_images': {
+#                     '$sum': '$numberOfImagesIndexed'
+#                 },
+#                 'total_reflections': {
+#                     '$avg': '$numberReflectionsMean'
+#                 }
+#             }
+#         },
+#         {
+#             '$sort': {
+#                 '_id.run_number': -1  # Sort by run_number in descending order
+#             }
+#         }
+#     ]
+
+#     logger.debug("after pipeline")
+
+#     try:
+#         # Execute the aggregation pipeline
+#         db = client[settings.database_name]
+#         collection: Collection = db[settings.vespa_collection_name]
+#         results = collection.aggregate(pipeline)        
+#         serialized_results = [serialize_documents(doc) for doc in results]  # Serialize the result
+#         return serialized_results
+#         return results
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/experiment-data-summary/")
 def get_experiment_data(experiment_group: str = "", client = Depends(get_client)
@@ -388,7 +451,7 @@ def get_ffcs_experiment_data(user_account: str = "", client = Depends(get_client
     pipeline = [
         {
             '$match': {
-                'userAccount': "e14965" #user_account
+                'userAccount': user_account
             }
         }, {
             '$addFields': {
@@ -434,8 +497,8 @@ def get_ffcs_campaign_data(user_account: str = "", campaign_id: str = "", client
     pipeline = [
         {
             '$match': {
-                'userAccount': 'e20275', 
-                'campaignId': 'software_test'
+                'userAccount': user_account, 
+                'campaignId': campaign_id
             }
         }, {
             '$addFields': {
@@ -449,11 +512,18 @@ def get_ffcs_campaign_data(user_account: str = "", campaign_id: str = "", client
         }, {
             '$group': {
                 '_id': {
-                    'campaignId': '$campaignId'
+                    'campaignId': '$campaignId',
+                    'plateId': '$plateId',
+                    'well': '$well',
                 }, 
                 'document': {
                     '$push': '$$ROOT'
                 }
+            }
+        }, {
+        '$sort': {
+            '_id.plateId': -1, 
+            '_id.well': 1,
             }
         }
     ]
