@@ -11,7 +11,7 @@ services:
       - 8008:8008
     volumes:
       - /etc/localtime:/etc/localtime:ro
-      - /etc/certificates:/certs:ro
+      - /etc/certificates:/etc/certificates:ro
     networks:
       - my-network
 networks:
