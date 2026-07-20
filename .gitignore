@@ -1,6 +1,9 @@
 # env file
 app/.env
 
+pip.conf
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
