@@ -10,6 +10,8 @@ from datetime import datetime
 import json
 import logging
 
+from ffcs_queries import CAMPAIGN_SOURCE_COLLECTION, campaign_discovery_pipeline
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -448,43 +450,14 @@ def get_experiment_data(experiment_group: str = "", client = Depends(get_client)
 def get_ffcs_experiment_data(user_account: str = "", client = Depends(get_client)
 ):
     logger.debug(f"inside experiment-data endpoint for experiment_group: {user_account}")
-    pipeline = [
-        {
-            '$match': {
-                'userAccount': user_account
-            }
-        }, {
-            '$addFields': {
-                '_id': {
-                    '$toString': '$_id'
-                }, 
-                'libraryId': {
-                    '$toString': '$libraryId'
-                }
-            }
-        }, {
-            '$project': {
-                'campaignId': '$campaignId', 
-                'document': '$$ROOT'
-            }
-        }, {
-            '$group': {
-                '_id': {
-                    'campaignId': '$campaignId'
-                }, 
-                'document': {
-                    '$push': '$$ROOT'
-                }
-            }
-        }
-    ]
+    pipeline = campaign_discovery_pipeline(user_account)
 
     logger.info("after pipeline")
 
     try:
         # Execute the aggregation pipeline
         db = client['ffcs']
-        collection: Collection = db['Campaigns']
+        collection: Collection = db[CAMPAIGN_SOURCE_COLLECTION]
         results = collection.aggregate(pipeline).to_list(length=None)
         return results
     except Exception as e:
